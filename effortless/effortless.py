@@ -35,6 +35,8 @@ class EffortlessDB:
         self._autoconfigure()
         self._operation_count = 0
         self._backup_thread = None
+        
+        logger.debug(f"EffortlessDB initialized with db_name={db_name}, encryption_key={encryption_key}")
 
     @property
     def config(self):
@@ -98,9 +100,11 @@ class EffortlessDB:
                 self._reencrypt_db(old_key, new_key)
             except ValueError as e:
                 self._encryption_key = old_key  # Revert to old key
+                logger.error(f"Failed to re-encrypt the database: {e}")
                 raise e
         else:
             self.config.encrypted = True
+            logger.info(f"Encryption key set for new database encryption.")
 
     def _reencrypt_db(self, old_key: Optional[str], new_key: str) -> None:
         """
@@ -115,8 +119,13 @@ class EffortlessDB:
         Raises:
             ValueError: If unable to decrypt the database with either the old or new key.
         """
-        data = self._read_db(try_keys=[old_key, new_key])
-        self._write_db(data, force_encrypt=True)
+        try:
+            data = self._read_db(try_keys=[old_key, new_key])
+            self._write_db(data, force_encrypt=True)
+            logger.info("Database successfully re-encrypted with new key.")
+        except ValueError as e:
+            logger.error(f"Failed to re-encrypt the database: {e}")
+            raise
 
     @staticmethod
     def default_db():
@@ -156,6 +165,8 @@ class EffortlessDB:
 
         self._storage_directory = directory
         self._update_storage_file()
+        logger.info(f"Database directory set to {directory}")
+
 
     def set_storage(self, db_name: str) -> None:
         """
@@ -186,6 +197,8 @@ class EffortlessDB:
 
         self._storage_filename = f"{db_name}.effortless"
         self._update_storage_file()
+        logger.info(f"Storage file set to {self._storage_filename}")
+
 
     def _update_storage_file(self) -> None:
         """
@@ -206,6 +219,7 @@ class EffortlessDB:
             self._storage_file = self._storage_filename
 
         self._autoconfigure()  # configure EffortlessConfig to the new file's configuration
+        logger.debug(f"Storage file path updated to {self._storage_file}")
 
     def _autoconfigure(self) -> None:
         """
@@ -238,6 +252,7 @@ class EffortlessDB:
         config.version = EffortlessConfig.CURRENT_VERSION
         new_data = {"headers": config.to_dict(), "content": content}
         self._write_db(new_data)
+        logger.info("Database migration completed to current version.")
 
     def _update_config(self):
         """
@@ -248,6 +263,7 @@ class EffortlessDB:
             new_config = EffortlessConfig.from_dict(data["headers"])
             new_config.validate_db(self)
             self._config = new_config
+            logger.debug("Configuration updated successfully.")
         except (ValueError, KeyError) as e:
             logger.error(f"Invalid configuration in database file: {e}")
             # Optionally, you could reset to a default configuration here
@@ -265,6 +281,7 @@ class EffortlessDB:
         data["headers"] = new_config.to_dict()
         self._write_db(data, write_in_readonly=True)
         self._config = new_config
+        logger.info(f"Database configuration updated successfully.")
 
     def get_all(self) -> List[Dict[str, Any]]:
         """
@@ -276,6 +293,7 @@ class EffortlessDB:
         Returns:
             List[Dict[str, Any]]: A list where each entry is a record in the database.
         """
+        logger.debug("Fetching all records from the database.")
         return self._read_db()["content"]
 
     def filter(self, query: Query) -> List[Dict[str, Any]]:
@@ -291,6 +309,7 @@ class EffortlessDB:
         Returns:
             List[Dict[str, Any]]: A list of records that match the query criteria.
         """
+        logger.debug(f"Filtering records based on query: {query}")
         return [entry for entry in self.get_all() if query.match(entry)]
 
     def add(self, entry: dict) -> None:
@@ -343,6 +362,7 @@ class EffortlessDB:
         data["content"].append(entry)
         self._write_db(data)
         self._handle_backup()
+        logger.debug(f"Entry added to database: {entry}")
 
     def wipe(self, wipe_readonly: bool = False) -> None:
         """
@@ -362,6 +382,7 @@ class EffortlessDB:
             write_in_readonly=wipe_readonly,
         )
         self._update_config()
+        logger.info("Database wiped successfully.")
 
     def _read_db(
         self, try_keys: Optional[List[Optional[str]]] = None
@@ -497,6 +518,7 @@ class EffortlessDB:
             and self._operation_count >= self.config.backup_interval
         ):
             self._operation_count = 0
+            logger.debug(f"Backup interval reached. Starting backup...")
 
             # If a backup thread is already running, we can stop it
             if self._backup_thread and self._backup_thread.is_alive():
@@ -523,8 +545,14 @@ class EffortlessDB:
                   False if the timeout was reached before the backup completed.
         """
         if self._backup_thread and self._backup_thread.is_alive():
+            logger.debug(f"Waiting for backup thread to finish...")
             self._backup_thread.join(timeout)
+            if not self._backup_thread.is_alive():
+                logger.debug("Backup completed.")
+            else:
+                logger.warning(f"Backup thread did not complete within timeout of {timeout}s.")
             return not self._backup_thread.is_alive()
+        logger.debug("No backup thread is running.")
         return True
 
     def _backup(self) -> bool:
@@ -556,6 +584,7 @@ class EffortlessDB:
                 logger.error(f"Backup failed: {str(e)}")
                 return False  # Indicate failure
 
+        logger.warning("Backup path not configured, skipping backup.")
         return False
 
     def _compress_data(self, data: Union[str, List[Dict[str, Any]]]) -> str:
@@ -571,6 +600,8 @@ class EffortlessDB:
         if isinstance(data, list):
             data = json.dumps(data)
         compressed = zlib.compress(data.encode())
+        encoded_data = base64.b64encode(compressed).decode()
+        logger.debug(f"Data compressed to {len(encoded_data)} characters.")
         return base64.b64encode(compressed).decode()
 
     def _decompress_data(self, data: str) -> List[Dict[str, Any]]:
@@ -586,7 +617,9 @@ class EffortlessDB:
             List[Dict[str, Any]]: The decompressed and parsed data.
         """
         decompressed = zlib.decompress(base64.b64decode(data))
-        return json.loads(decompressed.decode())
+        decoded_data = json.loads(decompressed.decode())
+        logger.debug(f"Data decompressed and parsed. {len(decoded_data)} entries found.")
+        return decoded_data
 
     def _encrypt_data(self, data: Union[str, Dict[str, Any]], key: str) -> str:
         """
@@ -600,7 +633,9 @@ class EffortlessDB:
             str: The encrypted data as a string.
         """
         fernet = Fernet(self._get_fernet_key(key))
-        return fernet.encrypt(json.dumps(data).encode()).decode()
+        encrypted_data = fernet.encrypt(json.dumps(data).encode()).decode()
+        logger.debug("Data encrypted successfully.")
+        return encrypted_data
 
     def _decrypt_data(self, data: str, key: str) -> Dict[str, Any]:
         """
@@ -617,7 +652,13 @@ class EffortlessDB:
             InvalidToken: If the decryption fails due to an invalid key.
         """
         fernet = Fernet(self._get_fernet_key(key))
-        return json.loads(fernet.decrypt(data.encode()).decode())
+        try:
+            decrypted_data = fernet.decrypt(data.encode()).decode()
+            logger.debug("Data decrypted successfully.")
+            return json.loads(decrypted_data)
+        except InvalidToken:
+            logger.error("Decryption failed: Invalid encryption key.")
+            raise
 
     @staticmethod
     def _get_fernet_key(key: str) -> bytes:
@@ -662,6 +703,7 @@ class EffortlessDB:
         data["content"][index].update(update_data)
         self._write_db(data)
         self._handle_backup()
+        logger.debug(f"Entry updated with data: {update_data}")
         return True
 
     def batch(self, update_data: Dict[str, Any], condition: Query) -> int:
@@ -686,6 +728,9 @@ class EffortlessDB:
         if updated_count > 0:
             self._write_db(data)
             self._handle_backup()
+            logger.debug(f"{updated_count} entries updated.")
+        else:
+            logger.debug("No entries updated.")
 
         return updated_count
 
@@ -708,15 +753,18 @@ class EffortlessDB:
         ]
 
         if len(matching_entries) > 1:
+            logger.error("More than one entry matches the given condition.")
             raise ValueError(
                 "More than one entry matches the given condition. If you want to remove multiple entries at once, use erase() instead."
             )
         elif len(matching_entries) == 0:
+            logger.debug("No matching entry found to remove.")
             return False
 
         data["content"].remove(matching_entries[0])
         self._write_db(data)
         self._handle_backup()
+        logger.debug("Entry removed from the database.")
         return True
 
     def erase(self, condition: Query) -> int:
@@ -739,7 +787,9 @@ class EffortlessDB:
         if removed_count > 0:
             self._write_db(data)
             self._handle_backup()
-            logger.debug(f"Erased {removed_count} entries from the database")
+            logger.debug(f"Erased {removed_count} entries from the database.")
+        else:
+            logger.debug("No entries matching the condition to erase.")
 
         return removed_count
 
@@ -781,6 +831,7 @@ class EffortlessDB:
         data = self._read_db()
         if not data["headers"]["encrypted"]:
             self._encryption_key = None
+            logger.debug("Database is not encrypted, nothing to unencrypt.")
             return
         if self._encryption_key is None:
             raise ValueError("No encryption key set")

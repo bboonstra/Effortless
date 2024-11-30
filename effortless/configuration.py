@@ -1,6 +1,10 @@
+import logging
 from typing import Any, Dict, List, Optional
 import os
 
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 class EffortlessConfig:
     """
@@ -55,6 +59,11 @@ class EffortlessConfig:
     @debug.setter
     def debug(self, value: bool) -> None:
         self._debug = bool(value)
+        
+        if self._debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
 
     @property
     def required_fields(self) -> List[str]:
@@ -201,6 +210,10 @@ class EffortlessConfig:
         Raises:
             ValueError: If the database size exceeds max_size or if any entry is missing required fields.
         """
+        
+        if self.debug:
+            logger.debug(f"Validating database with max_size={self.max_size} and required_fields={self.required_fields}.")
+
         # Check max_size
         if self.max_size is not None:
             current_size = os.path.getsize(db._storage_file) / (
